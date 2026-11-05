@@ -25,17 +25,11 @@ def is_workday(d, holidays):
     return d.weekday() < 5 and d not in holidays
 
 def deadline(product_delivery, today):
-    # Product Delivery Date μείον 3 εργάσιμες, όχι πριν από σήμερα, πάντα 01:00
+    # Απόφαση 16 (05/11): προθεσμία = Product Delivery Date στις 01:00· όχι πριν από σήμερα· κενό → σήμερα 01:00
     at_one = lambda d: datetime.combine(d, datetime.min.time().replace(hour=1))
     if product_delivery is None:
         return at_one(today)
-    holidays = greek_holidays(product_delivery.year) | greek_holidays(product_delivery.year - 1)
-    d, counted = product_delivery, 0
-    while counted < 3:
-        d -= timedelta(days=1)
-        if is_workday(d, holidays):
-            counted += 1
-    return at_one(max(d, today))
+    return at_one(max(product_delivery, today))
 
 def build_title(wo, service, pod):
     # WO / POD μόνο όταν η υπηρεσία περιέχει ΥΔΕ και υπάρχει POD
@@ -60,13 +54,22 @@ def split_name(name):
     k = len(w) // 2
     return " ".join(w[:k]), " ".join(w[k:])
 
+def clean_phone(p):
+    # Μόνο ψηφία· αφαίρεση διεθνούς προθέματος 30 όταν προκύπτει 12ψήφιος αριθμός (απόφαση 18)
+    d = "".join(ch for ch in (p or "") if ch.isdigit())
+    if len(d) == 12 and d.startswith("30"):   # ← σβήσε αυτή και την επόμενη γραμμή αν πεις ΟΧΙ στο 30
+        d = d[2:]
+    return d
+
 def customer_phones(mobile, landline):
-    # Τηλέφωνο αναζήτησης και τηλέφωνα αποθήκευσης· 6900000000 μόνο για νέο πελάτη
-    mobile, landline = (mobile or "").strip(), (landline or "").strip()
-    search = mobile or landline or None
+    # Τηλέφωνο αναζήτησης και τηλέφωνα αποθήκευσης· ίδιο κινητό/σταθερό → μία γραμμή (απόφαση 18)
+    mobile, landline = clean_phone(mobile), clean_phone(landline)
     if not mobile and not landline:
         return None, ["6900000000"]
-    return search, [p for p in (mobile, landline) if p]
+    phones = [mobile] if mobile else []
+    if landline and landline != mobile:
+        phones.append(landline)
+    return mobile or landline, phones
 
 import unicodedata
 
