@@ -1,10 +1,13 @@
-# main.py — βρόχος WO Κωτσόβολος → domx, ιστορικό CSV, σύνολα (φύλλο 13, κανόνες Σ-1/Σ-5)
 import csv, re, sys
 from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 from playwright.sync_api import sync_playwright
 import domx
+from rules import deadline, build_title, split_name, customer_phones
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill, Font, Alignment
+REPORTS = Path("reports")
 
 SOURCE_URL = "https://kotsovolosportal.powerappsportals.com/workorder-list/"
 HISTORY = Path("history.csv")
@@ -101,12 +104,64 @@ def confirm(page):
     page.pause()
     return domx.wizard_is_open(page)
 
+# ---------- REPORT ΑΝΑ ΕΚΤΕΛΕΣΗ ----------
+
+COLORS = {"ΚΑΤΑΧΩΡΙΣΤΗΚΕ": "C6EFCE", "ΠΑΡΑΛΕΙΨΗ": "E7E6E6", "ΓΙΑ ΕΛΕΓΧΟ": "FFEB9C", "ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ": "FFC7CE"}
+HEAD = ["WO", "Υπηρεσία", "Τίτλος domx", "Προθεσμία", "Παράδοση (πηγή)", "Πελάτης", "Τηλέφωνα",
+        "Διεύθυνση πηγής", "Επιλογή πελάτη/εγκατάστασης", "Αποτέλεσμα", "Στάδιο", "Αιτία", "Ώρα"]
+
+
+def report_row(wo, r, t):
+    # Μία γραμμή report από τα δεδομένα του WO και το αποτέλεσμα· όλα τα πεδία προαιρετικά
+    if wo is None:
+        return [r["wo"], "", "", "", "", "", "", "", "", r["result"], r["stage"], r["reason"], t]
+    title = build_title(wo["Work Order Number"], wo["Service"], wo.get("POD", ""))
+    due = deadline(wo.get("_pdd"), date.today()).strftime("%d/%m/%Y %H:%M")
+    try:
+        name = " ".join(split_name(wo.get("Contact Name", "")))
+    except ValueError:
+        name = "(κενό Contact Name)"
+    _, phones = customer_phones(wo.get("Contact Mobile Phone", ""), wo.get("Contact Phone Number", ""))
+    addr = ", ".join(x for x in (wo.get("Street 1"), wo.get("City"), wo.get("Postal Code")) if x)
+    choice = r["reason"] if r["result"] == "ΚΑΤΑΧΩΡΙΣΤΗΚΕ" else ""
+    choice = (choice.replace("πελάτης new", "νέος πελάτης").replace("πελάτης existing", "υπάρχων πελάτης")
+              .replace("new_installation", "νέα εγκατάσταση (Google)").replace("existing_installation", "υπάρχουσα εγκατάσταση")
+              .replace("fallback_address", "ΕΝΑΛΛΑΚΤΙΚΗ ΔΙΕΥΘΥΝΣΗ ΚΑΤΑΣΤΗΜΑΤΟΣ"))
+    return [wo["Work Order Number"], wo["Service"], title, due, wo.get("Product Delivery Date", ""),
+            name, " / ".join(phones), addr, choice, r["result"], r["stage"], r["reason"], t]
+
+
+def write_report(run_id, rows, totals, found):
+    REPORTS.mkdir(exist_ok=True)
+    wb = Workbook(); ws = wb.active; ws.title = "Αποτελέσματα"
+    ws.append(HEAD)
+    for c in ws[1]:
+        c.font = Font(bold=True); c.fill = PatternFill("solid", fgColor="DDEBF7")
+    for row in rows:
+        ws.append(row)
+        fill = PatternFill("solid", fgColor=COLORS.get(row[9], "FFFFFF"))
+        for c in ws[ws.max_row]:
+            c.fill = fill; c.alignment = Alignment(vertical="top", wrap_text=True)
+    for col, w in zip("ABCDEFGHIJKLM", (12, 34, 24, 16, 16, 26, 24, 34, 36, 16, 11, 40, 9)):
+        ws.column_dimensions[col].width = w
+    ws.freeze_panes = "B2"; ws.auto_filter.ref = ws.dimensions
+    s = wb.create_sheet("Σύνολα")
+    for k, v in [("Εκτέλεση", run_id), ("Εντοπίστηκαν", found), ("Παραλείφθηκαν ως υπάρχοντα", totals["ΠΑΡΑΛΕΙΨΗ"]),
+                 ("Καταχωρίστηκαν", totals["ΚΑΤΑΧΩΡΙΣΤΗΚΕ"]), ("Χρειάζονται έλεγχο", totals["ΓΙΑ ΕΛΕΓΧΟ"]),
+                 ("Τεχνικά σφάλματα", totals["ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ"])]:
+        s.append([k, v])
+    s.column_dimensions["A"].width = 30
+    path = REPORTS / f"report_{run_id}.xlsx"
+    wb.save(path)
+    return path
+
 
 # ---------- ΚΥΡΙΑ ΡΟΗ ----------
 
 run_id = datetime.now().strftime("%Y%m%d-%H%M")
 seen_before = previous_wos()
 totals = {"ΠΑΡΑΛΕΙΨΗ": 0, "ΚΑΤΑΧΩΡΙΣΤΗΚΕ": 0, "ΓΙΑ ΕΛΕΓΧΟ": 0, "ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ": 0}
+rows = []
 
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=False)
@@ -136,6 +191,7 @@ with sync_playwright() as p:
         r = dict(result="ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ", stage="read", reason=reason, domx_ref="")
         append_history(run_id, wo_no, r, wo_no in seen_before)
         totals[r["result"]] += 1
+        rows.append(report_row(None, dict(r, wo=wo_no), datetime.now().strftime("%H:%M:%S")))
 
     dx = ctx.new_page()
     dx.goto(domx.BASE_URL + "/")
@@ -151,6 +207,7 @@ with sync_playwright() as p:
             r = dict(result="ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ", stage="main", reason=f"{type(e).__name__}: {str(e)[:150]}", domx_ref="")
         append_history(run_id, wo_no, r, wo_no in seen_before)
         totals[r["result"]] += 1
+        rows.append(report_row(wo, r, datetime.now().strftime("%H:%M:%S")))
         print(f"ΑΠΟΤΕΛΕΣΜΑ: {r['result']} | στάδιο: {r['stage']} | αιτία: {r['reason']} | ref: {r['domx_ref']}")
 
     print(f"\n===== ΣΥΝΟΛΑ ({run_id}) =====")
@@ -160,6 +217,7 @@ with sync_playwright() as p:
     print(f"Χρειάζονται έλεγχο: {totals['ΓΙΑ ΕΛΕΓΧΟ']}")
     print(f"Τεχνικά σφάλματα: {totals['ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ']}")
     print(f"Ιστορικό: {HISTORY.resolve()}")
+    print(f"Report: {write_report(run_id, rows, totals, len(targets)).resolve()}")
     print("Πάτησε Resume για κλείσιμο.")
     dx.pause()
     browser.close()
