@@ -5,6 +5,7 @@ from urllib.parse import urljoin, urlsplit
 from playwright.sync_api import sync_playwright
 import domx
 import keyring
+import requests
 from rules import deadline, build_title, split_name, customer_phones
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment
@@ -212,6 +213,29 @@ def write_report(run_id, rows, totals, found):
         print("ΠΡΟΣΟΧΗ: το WO_Report.xlsx ήταν ανοιχτό — γράφτηκε αντίγραφο με όλα τα δεδομένα:", alt.name)
         return alt
 
+# ---------- ΕΙΔΟΠΟΙΗΣΗ TEAMS (μόνο ΓΙΑ ΕΛΕΓΧΟ / ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ) ----------
+
+def notify_teams(run_id, rows):
+    issues = [r for r in rows if r[9] in ("ΓΙΑ ΕΛΕΓΧΟ", "ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ")]
+    if not issues:
+        return "δεν χρειάστηκε"
+    url = keyring.get_password("teams", "webhook")
+    if not url:
+        return "ΔΕΝ ΣΤΑΛΘΗΚΕ: λείπει το webhook (keyring teams/webhook)"
+    body = [{"type": "TextBlock", "weight": "Bolder", "size": "Medium",
+             "text": f"Work Orders για έλεγχο — εκτέλεση {run_id} ({len(issues)})"}]
+    for r in issues:
+        body.append({"type": "TextBlock", "wrap": True,
+                     "text": f"**{r[0]}** · {r[1]}\n\n{r[9]} στο στάδιο «{r[10]}»: {r[11]}"})
+    card = {"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {"$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "type": "AdaptiveCard",
+                        "version": "1.4", "body": body}}]}
+    try:
+        resp = requests.post(url, json=card, timeout=30)
+        return f"στάλθηκε ({resp.status_code})" if resp.status_code in (200, 202) else f"ΑΠΟΤΥΧΙΑ HTTP {resp.status_code}"
+    except Exception as e:
+        return f"ΑΠΟΤΥΧΙΑ: {type(e).__name__}"
+
 
 # ---------- ΚΥΡΙΑ ΡΟΗ ----------
 
@@ -271,6 +295,7 @@ with sync_playwright() as p:
     print(f"Τεχνικά σφάλματα: {totals['ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ']}")
     print(f"Ιστορικό: {HISTORY.resolve()}")
     print(f"Report: {write_report(run_id, rows, totals, len(targets)).resolve()}")
+    print(f"Teams: {notify_teams(run_id, rows)}")
     print("Πάτησε Resume για κλείσιμο.")
     dx.pause()
     ctx.close()
