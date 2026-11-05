@@ -46,6 +46,12 @@ CASES = {
         "Street 1": "ΑΓΝΩΣΤΗ ΟΔΟΣ 999", "City": "Νέα Πέραμος", "Postal Code": "19006",
         "Work Order Summary": "T6 εναλλακτική διεύθυνση",
         "expect": "fallback_address"}),
+    "T7": dict(BASE, **{   # πλήρης δρόμος ΤΕΛΟΣ: νέος πελάτης 2 τηλέφωνα + Google + επαλήθευση
+        "Work Order Number": "WOTEST0018", "Service": SERVICE_OK,
+        "Contact Name": "ΔΟΚΙΜΗ ΚΟΚΚΑΣ Τ7", "Contact Mobile Phone": "6900000018", "Contact Phone Number": "2296000018",
+        "Street 1": "Διγενή Ακρίτα 4", "City": "Νέα Πέραμος", "Postal Code": "19006",
+        "Work Order Summary": "T7 πλήρης καταχώριση μέσω domx.py",
+        "expect": "new_customer_two_phones_saved"}),
     "E5": dict(BASE, **{   # υπηρεσία που δεν υπάρχει στο domx -> για έλεγχο πριν γραφτεί οτιδήποτε
         "Work Order Number": "WOTEST0017", "Service": "ΥΠΗΡΕΣΙΑ ΠΟΥ ΔΕΝ ΥΠΑΡΧΕΙ",
         "Contact Name": "ΔΟΚΙΜΗ ΚΟΚΚΑΣ Τ1", "Contact Mobile Phone": "6900000011", "Contact Phone Number": "",
