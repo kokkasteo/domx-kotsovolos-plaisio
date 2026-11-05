@@ -1,4 +1,4 @@
-import csv, re, sys
+import csv, re, sys, atexit, time
 from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
@@ -22,13 +22,10 @@ COLUMNS = ["run_id", "time", "wo", "stage", "result", "reason", "domx_ref", "rec
 # python main.py            → Κωτσόβολος + Πλαίσιο, όλα τα WO
 # python main.py 2          → έως 2 WO ανά πηγή
 # python main.py --source plaisio [N]   → μόνο μία πηγή
-# python main.py --source plaisio --test → τεχνητά WO Πλαισίου (TEST_ROWS)
 _args = sys.argv[1:]
 SOURCES = ["kotsovolos", "plaisio"]
 if "--source" in _args:
     i = _args.index("--source"); SOURCES = [_args[i + 1]]; del _args[i:i + 2]
-TEST = "--test" in _args
-_args = [a for a in _args if a != "--test"]
 LIMIT = int(_args[0]) if _args else None
 
 FIELDS = [
@@ -261,6 +258,11 @@ def notify_teams(run_id, rows):
 
 # ---------- ΚΥΡΙΑ ΡΟΗ ----------
 
+LOCK = Path("run.lock")
+if LOCK.exists() and time.time() - LOCK.stat().st_mtime < 3 * 3600:
+    raise SystemExit(f"Τρέχει ήδη άλλη εκτέλεση ({LOCK.read_text().strip()}) — τέλος χωρίς ενέργεια.")
+LOCK.write_text(datetime.now().strftime("%Y%m%d-%H%M"))
+atexit.register(lambda: LOCK.unlink(missing_ok=True))
 run_id = datetime.now().strftime("%Y%m%d-%H%M")
 seen_before = previous_wos()
 totals = {"ΠΑΡΑΛΕΙΨΗ": 0, "ΚΑΤΑΧΩΡΙΣΤΗΚΕ": 0, "ΓΙΑ ΕΛΕΓΧΟ": 0, "ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ": 0}
@@ -297,12 +299,8 @@ with sync_playwright() as p:
     # --- Πηγή 2: Πλαίσιο ---
     if "plaisio" in SOURCES:
         try:
-            if TEST:
-                print("ΛΕΙΤΟΥΡΓΙΑ ΔΟΚΙΜΗΣ: τεχνητά WO Πλαισίου, χωρίς ανάγνωση portal")
-                pl_rows = plaisio.TEST_ROWS
-            else:
-                plaisio.login_plaisio(src)
-                pl_rows = plaisio.read_open(src)
+            plaisio.login_plaisio(src)
+            pl_rows = plaisio.read_open(src)
             pl_rows = pl_rows[:LIMIT]
             found_total += len(pl_rows)
             print(f"\nΕντοπίστηκαν WO (Πλαίσιο): {len(pl_rows)}")

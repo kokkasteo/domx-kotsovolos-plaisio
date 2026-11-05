@@ -7,3 +7,5 @@ __pycache__/
 storage_state.json
 *.env
 reports/
+logs/
+run.lock
