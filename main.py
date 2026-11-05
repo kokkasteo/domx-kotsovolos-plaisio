@@ -8,6 +8,7 @@ from rules import deadline, build_title, split_name, customer_phones
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 REPORTS = Path("reports")
+PROFILE = Path.home() / "kotsovolos-domx-profile"   # μόνιμο προφίλ browser, εκτός repo
 
 SOURCE_URL = "https://kotsovolosportal.powerappsportals.com/workorder-list/"
 HISTORY = Path("history.csv")
