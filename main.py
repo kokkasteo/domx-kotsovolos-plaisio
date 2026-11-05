@@ -279,7 +279,7 @@ with sync_playwright() as p:
         wo_no = wo["Work Order Number"]
         print(f"\n=== {n}/{len(wos)}: {wo_no} | {wo['Service']} ===")
         try:
-            r = domx.process_wo(dx, wo, confirm=confirm)
+            r = domx.process_wo(dx, wo)
         except Exception as e:
             r = dict(result="ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ", stage="main", reason=f"{type(e).__name__}: {str(e)[:150]}", domx_ref="")
         append_history(run_id, wo_no, r, wo_no in seen_before)
@@ -296,6 +296,4 @@ with sync_playwright() as p:
     print(f"Ιστορικό: {HISTORY.resolve()}")
     print(f"Report: {write_report(run_id, rows, totals, len(targets)).resolve()}")
     print(f"Teams: {notify_teams(run_id, rows)}")
-    print("Πάτησε Resume για κλείσιμο.")
-    dx.pause()
     ctx.close()
