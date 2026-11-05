@@ -4,10 +4,11 @@ from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 from playwright.sync_api import sync_playwright
 import domx
+import keyring
 from rules import deadline, build_title, split_name, customer_phones
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment
-REPORTS = Path("reports")
+REPORT_FILE = Path(r"C:\Users\kokka\KK TEXNIKI\Office - Office\Domx") / "WO_Report.xlsx"
 PROFILE = Path.home() / "kotsovolos-domx-profile"   # μόνιμο προφίλ browser, εκτός repo
 
 SOURCE_URL = "https://kotsovolosportal.powerappsportals.com/workorder-list/"
@@ -105,10 +106,55 @@ def confirm(page):
     page.pause()
     return domx.wizard_is_open(page)
 
+# ---------- ΑΥΤΟΜΑΤΗ ΣΥΝΔΕΣΗ (μόνο αν εμφανιστεί σελίδα login) ----------
+
+def cred(service):
+    user, pwd = keyring.get_password(service, "username"), keyring.get_password(service, "password")
+    if not user or not pwd:
+        raise SystemExit(f"Δεν υπάρχουν κωδικοί για «{service}». Τρέξε: python setup_credentials.py")
+    return user, pwd
+
+
+def login_kotsovolos(page):
+    user_box = page.get_by_role("textbox", name="Username")
+    if user_box.count() == 0 or not user_box.first.is_visible():
+        print("Κωτσόβολος: ήδη συνδεδεμένος.")
+        return
+    u, p = cred("kotsovolos")
+    user_box.first.fill(u)
+    page.get_by_role("textbox", name="Password").fill(p)
+    page.get_by_role("checkbox", name="Remember me?").check()
+    page.get_by_role("button", name="Sign in").click()
+    page.wait_for_url(re.compile(r"/workorder-list"), timeout=60000)
+    print("Κωτσόβολος: αυτόματη σύνδεση OK.")
+
+
+def login_domx(page):
+    page.goto(domx.BASE_URL + "/dashboard", wait_until="domcontentloaded", timeout=60000)
+    quick_add = page.get_by_role("button", name="ΓΡΗΓΟΡΗ ΠΡΟΣΘΗΚΗ")
+    for _ in range(120):                                   # έως 60 δευτερόλεπτα συνολικά
+        if quick_add.count() and quick_add.first.is_visible():
+            print("domx: dashboard έτοιμο.")
+            return
+        welcome = page.get_by_text("Σύνδεση", exact=True)
+        if welcome.count() and welcome.first.is_visible():
+            welcome.first.click(); page.wait_for_timeout(1500); continue
+        email = page.get_by_role("textbox", name="Email")
+        if email.count() and email.first.is_visible():
+            u, p = cred("domx")
+            email.first.fill(u)
+            page.get_by_role("textbox", name="Κωδικός πρόσβασης").fill(p)
+            page.get_by_role("checkbox", name="Να με θυμάσαι").check()
+            page.locator('#kc-login, input[type="submit"], button[type="submit"]').first.click()
+            print("domx: στάλθηκαν στοιχεία σύνδεσης, αναμονή dashboard…")
+            page.wait_for_timeout(2000); continue
+        page.wait_for_timeout(500)
+    raise RuntimeError("domx: δεν εμφανίστηκε το dashboard σε 60s.")
+
 # ---------- REPORT ΑΝΑ ΕΚΤΕΛΕΣΗ ----------
 
 COLORS = {"ΚΑΤΑΧΩΡΙΣΤΗΚΕ": "C6EFCE", "ΠΑΡΑΛΕΙΨΗ": "E7E6E6", "ΓΙΑ ΕΛΕΓΧΟ": "FFEB9C", "ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ": "FFC7CE"}
-HEAD = ["WO", "Υπηρεσία", "Τίτλος domx", "Προθεσμία", "Παράδοση (πηγή)", "Πελάτης", "Τηλέφωνα",
+HEAD = ["Εκτέλεση", "WO", "Υπηρεσία", "Τίτλος domx", "Προθεσμία", "Παράδοση (πηγή)", "Πελάτης", "Τηλέφωνα",
         "Διεύθυνση πηγής", "Επιλογή πελάτη/εγκατάστασης", "Αποτέλεσμα", "Στάδιο", "Αιτία", "Ώρα"]
 
 
@@ -133,28 +179,38 @@ def report_row(wo, r, t):
 
 
 def write_report(run_id, rows, totals, found):
-    REPORTS.mkdir(exist_ok=True)
-    wb = Workbook(); ws = wb.active; ws.title = "Αποτελέσματα"
-    ws.append(HEAD)
-    for c in ws[1]:
-        c.font = Font(bold=True); c.fill = PatternFill("solid", fgColor="DDEBF7")
+    # Ένα αρχείο για όλες τις εκτελέσεις: προσθέτει γραμμές στο «Αποτελέσματα» και μία γραμμή στο «Εκτελέσεις»
+    if REPORT_FILE.exists():
+        wb = load_workbook(REPORT_FILE)
+        ws, s = wb["Αποτελέσματα"], wb["Εκτελέσεις"]
+    else:
+        REPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        wb = Workbook(); ws = wb.active; ws.title = "Αποτελέσματα"
+        ws.append(HEAD)
+        for col, w in zip("ABCDEFGHIJKLMN", (15, 12, 34, 24, 16, 16, 26, 24, 34, 36, 16, 11, 40, 9)):
+            ws.column_dimensions[col].width = w
+        ws.freeze_panes = "C2"
+        s = wb.create_sheet("Εκτελέσεις")
+        s.append(["Εκτέλεση", "Εντοπίστηκαν", "Παραλείφθηκαν", "Καταχωρίστηκαν", "Για έλεγχο", "Τεχνικά σφάλματα"])
+        for sheet in (ws, s):
+            for c in sheet[1]:
+                c.font = Font(bold=True); c.fill = PatternFill("solid", fgColor="DDEBF7")
+        s.column_dimensions["A"].width = 15
     for row in rows:
-        ws.append(row)
+        ws.append([run_id] + row)
         fill = PatternFill("solid", fgColor=COLORS.get(row[9], "FFFFFF"))
         for c in ws[ws.max_row]:
             c.fill = fill; c.alignment = Alignment(vertical="top", wrap_text=True)
-    for col, w in zip("ABCDEFGHIJKLM", (12, 34, 24, 16, 16, 26, 24, 34, 36, 16, 11, 40, 9)):
-        ws.column_dimensions[col].width = w
-    ws.freeze_panes = "B2"; ws.auto_filter.ref = ws.dimensions
-    s = wb.create_sheet("Σύνολα")
-    for k, v in [("Εκτέλεση", run_id), ("Εντοπίστηκαν", found), ("Παραλείφθηκαν ως υπάρχοντα", totals["ΠΑΡΑΛΕΙΨΗ"]),
-                 ("Καταχωρίστηκαν", totals["ΚΑΤΑΧΩΡΙΣΤΗΚΕ"]), ("Χρειάζονται έλεγχο", totals["ΓΙΑ ΕΛΕΓΧΟ"]),
-                 ("Τεχνικά σφάλματα", totals["ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ"])]:
-        s.append([k, v])
-    s.column_dimensions["A"].width = 30
-    path = REPORTS / f"report_{run_id}.xlsx"
-    wb.save(path)
-    return path
+    ws.auto_filter.ref = ws.dimensions
+    s.append([run_id, found, totals["ΠΑΡΑΛΕΙΨΗ"], totals["ΚΑΤΑΧΩΡΙΣΤΗΚΕ"], totals["ΓΙΑ ΕΛΕΓΧΟ"], totals["ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ"]])
+    try:
+        wb.save(REPORT_FILE)
+        return REPORT_FILE
+    except PermissionError:
+        alt = REPORT_FILE.with_name(f"WO_Report_{run_id}.xlsx")
+        wb.save(alt)
+        print("ΠΡΟΣΟΧΗ: το WO_Report.xlsx ήταν ανοιχτό — γράφτηκε αντίγραφο με όλα τα δεδομένα:", alt.name)
+        return alt
 
 
 # ---------- ΚΥΡΙΑ ΡΟΗ ----------
@@ -165,14 +221,12 @@ totals = {"ΠΑΡΑΛΕΙΨΗ": 0, "ΚΑΤΑΧΩΡΙΣΤΗΚΕ": 0, "ΓΙΑ ΕΛ
 rows = []
 
 with sync_playwright() as p:
-    browser = p.chromium.launch(headless=False)
-    ctx = browser.new_context(no_viewport=True)
+    ctx = p.chromium.launch_persistent_context(str(PROFILE), headless=False, no_viewport=True)
 
-    src = ctx.new_page()
+    src = ctx.pages[0] if ctx.pages else ctx.new_page()   # το persistent προφίλ ανοίγει ήδη μία καρτέλα
     src.goto(SOURCE_URL, wait_until="domcontentloaded", timeout=60000)
-    print("ΚΩΤΣΟΒΟΛΟΣ: συνδέσου, επίλεξε την προβολή «Portal 1 – Προγραμματισμένα ανά ημέρα»,")
-    print("μείνε στη λίστα και πάτησε Resume.")
-    src.pause()
+    login_kotsovolos(src)
+    src.get_by_role("link", name=re.compile(r"^WO\d+$")).first.wait_for(state="visible", timeout=60000)
     if urlsplit(src.url).path.rstrip("/") != "/workorder-list":
         raise SystemExit("Δεν βρίσκεσαι στη λίστα WO. Τέλος χωρίς καμία ενέργεια.")
 
@@ -195,9 +249,7 @@ with sync_playwright() as p:
         rows.append(report_row(None, dict(r, wo=wo_no), datetime.now().strftime("%H:%M:%S")))
 
     dx = ctx.new_page()
-    dx.goto(domx.BASE_URL + "/")
-    print("\nDOMX: συνδέσου, μείνε στο dashboard και πάτησε Resume.")
-    dx.pause()
+    login_domx(dx)
 
     for n, wo in enumerate(wos, 1):
         wo_no = wo["Work Order Number"]
@@ -221,4 +273,4 @@ with sync_playwright() as p:
     print(f"Report: {write_report(run_id, rows, totals, len(targets)).resolve()}")
     print("Πάτησε Resume για κλείσιμο.")
     dx.pause()
-    browser.close()
+    ctx.close()
