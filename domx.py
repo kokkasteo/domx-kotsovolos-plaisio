@@ -14,6 +14,7 @@ OWNER = "Έφη Τσιατσιάνη"
 BASE_URL = "https://portal.business.domx.online"
 START_DATE = "01/01/2024"
 END_DATE = "31/12/2031"
+MIN_TOTAL = 9500   # η πλήρης λίστα μόνο αυξάνεται (9686 στις 05/11/2026)· λιγότερες = λάθος φόρτωση ή φίλτρο
 FALLBACK = {"street": "28ης Οκτωβρίου 157", "area": "Νέα Πέραμος", "zip": "19006",
             "lat": "38.011784", "lon": "23.434141",
             "note": "ΕΛΕΓΧΟΣ ΔΙΕΥΘΥΝΣΗΣ — χρησιμοποιήθηκε η διεύθυνση του καταστήματος."}
@@ -92,8 +93,8 @@ def prepare_tasks_page(page):
         heading = page.get_by_role("heading", level=1)
         baseline_heading = " ".join(heading.inner_text().split())
         match = re.fullmatch(r"Εκκρεμότητες\s+(\d+)\s+Σύνολο", baseline_heading)
-        if not match or int(match.group(1)) == 0:
-            raise RuntimeError(f"Δεν επιβεβαιώθηκε η αρχική λίστα ({baseline_heading!r}).")
+        if not match or int(match.group(1)) < MIN_TOTAL:
+            raise RuntimeError(f"Η λίστα δεν είναι η πλήρης 2024–2031 ({baseline_heading!r}).")
 
         first_row = table.get_by_role("row").filter(has=page.get_by_role("cell")).first
         expect(first_row).to_be_visible()
@@ -137,7 +138,13 @@ def exists_in_domx(page, wo_no):
     """True = ΒΡΕΘΗΚΕ, False = κενή λίστα («Δεν βρέθηκαν εκκρεμότητες» + 0 Σύνολο).
     Οτιδήποτε άλλο → εξαίρεση (Μ-4: αβέβαιο ≠ ανύπαρκτο)."""
     if not _TASKS or urlsplit(page.url).path.rstrip("/") != "/tasks":
-        prepare_tasks_page(page)
+        for attempt in range(1, 4):           # έως 3 προσπάθειες φόρτωσης της πλήρους λίστας
+            try:
+                prepare_tasks_page(page); break
+            except RuntimeError as e:
+                log(f"Φόρτωση Εκκρεμοτήτων, προσπάθεια {attempt}/3 απέτυχε: {e}")
+                if attempt == 3:
+                    raise
     t = _TASKS
     table, heading, search = t["table"], t["heading"], t["search"]
 
@@ -390,6 +397,10 @@ def process_wo(page, wo, confirm=None, today=None):
     try:
         if exists_in_domx(page, wo_no):
             return dict(result="ΠΑΡΑΛΕΙΨΗ", stage=stage, reason="Υπάρχει ήδη στο domx", domx_ref=wo_no)
+        _TASKS.clear()                        # Σ-7: δεύτερος έλεγχος μετά από πλήρη επαναφόρτωση
+        log("Δεν βρέθηκε — επαναφόρτωση σελίδας και δεύτερη αναζήτηση")
+        if exists_in_domx(page, wo_no):
+            return dict(result="ΠΑΡΑΛΕΙΨΗ", stage=stage, reason="Υπάρχει ήδη στο domx (2ος έλεγχος)", domx_ref=wo_no)
     except Exception as e:
         return dict(result="ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ", stage=stage,
                     reason=f"{type(e).__name__}: {str(e)[:200]}", domx_ref="")
