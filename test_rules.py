@@ -16,3 +16,4 @@ print(customer_phones("", ""), customer_phones("6949205010", "2296000015"), cust
 print("Ίδιο ->", customer_phones("6949208320", "6949208320"))
 print("Πρόθεμα 30 ->", customer_phones("6986725953", "302117359848"))
 print(len(build_notes({"OTP": "x" * 2000})))
+print(build_notes({"OTP": "1", "Street 1": "ΔΙΓΕΝΗ ΑΚΡΙΤΑ 4", "City": "Νέα Πέραμος", "Postal Code": "19006"}))

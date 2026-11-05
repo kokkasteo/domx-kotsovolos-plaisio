@@ -40,7 +40,8 @@ def build_title(wo, service, pod):
 def build_notes(f):
     # Σημειώσεις εκκρεμότητας με τη συμφωνημένη σειρά, περικοπή στους 1000 χαρακτήρες
     order = ["OTP", "Product", "Product Delivery Date", "Appointment Date",
-             "Work Order Summary", "Survey Response", "Change Status Comments"]
+             "Work Order Summary", "Survey Response", "Change Status Comments",
+             "Street 1", "Street 2", "Street 3", "City", "Postal Code"]
     text = "\n".join(f"{k}: {f.get(k, '') or ''}" for k in order)
     return text[:1000]
 
