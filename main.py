@@ -274,40 +274,42 @@ with sync_playwright() as p:
 
     # --- Πηγή 1: Κωτσόβολος ---
     if "kotsovolos" in SOURCES:
-        src.goto(SOURCE_URL, wait_until="domcontentloaded", timeout=60000)
-        login_kotsovolos(src)
-        src.get_by_role("link", name=re.compile(r"^WO\d+$")).first.wait_for(state="visible", timeout=60000)
-        if urlsplit(src.url).path.rstrip("/") != "/workorder-list":
-            raise SystemExit("Δεν βρίσκεσαι στη λίστα WO. Τέλος χωρίς καμία ενέργεια.")
-        targets = list(collect_targets(src).items())[:LIMIT]
-        found_total += len(targets)
-        print(f"\nΕντοπίστηκαν WO (Κωτσόβολος): {len(targets)}")
-        for n, (wo_no, url) in enumerate(targets, 1):
-            try:
-                wos.append(read_wo(src, wo_no, url))
-                print(f"  {n}/{len(targets)} διαβάστηκε {wo_no}")
-            except Exception as e:
-                read_errors.append((wo_no, f"{type(e).__name__}: {str(e)[:150]}"))
-                print(f"  {n}/{len(targets)} ΣΦΑΛΜΑ ανάγνωσης {wo_no}: {e}")
+        try:
+            src.goto(SOURCE_URL, wait_until="domcontentloaded", timeout=60000)
+            login_kotsovolos(src)
+            src.get_by_role("link", name=re.compile(r"^WO\d+$")).first.wait_for(state="visible", timeout=60000)
+            if urlsplit(src.url).path.rstrip("/") != "/workorder-list":
+                raise RuntimeError("Δεν βρίσκεσαι στη λίστα WO.")
+            targets = list(collect_targets(src).items())[:LIMIT]
+            found_total += len(targets)
+            print(f"\nΕντοπίστηκαν WO (Κωτσόβολος): {len(targets)}")
+            for n, (wo_no, url) in enumerate(targets, 1):
+                try:
+                    wos.append(read_wo(src, wo_no, url))
+                    print(f"  {n}/{len(targets)} διαβάστηκε {wo_no}")
+                except Exception as e:
+                    read_errors.append((wo_no, f"{type(e).__name__}: {str(e)[:150]}"))
+                    print(f"  {n}/{len(targets)} ΣΦΑΛΜΑ ανάγνωσης {wo_no}: {e}")
+        except Exception as e:
+            read_errors.append(("ΠΗΓΗ kotsovolos", f"{type(e).__name__}: {str(e)[:150]}"))
+            print(f"ΣΦΑΛΜΑ πηγής Κωτσόβολος: {e}")
 
     # --- Πηγή 2: Πλαίσιο ---
     if "plaisio" in SOURCES:
-        if TEST:
-            print("ΛΕΙΤΟΥΡΓΙΑ ΔΟΚΙΜΗΣ: τεχνητά WO Πλαισίου, χωρίς ανάγνωση portal")
-            pl_rows = plaisio.TEST_ROWS
-        else:
-            plaisio.login_plaisio(src)
-            pl_rows = plaisio.read_open(src)
-        pl_rows = pl_rows[:LIMIT]
-        found_total += len(pl_rows)
-        print(f"\nΕντοπίστηκαν WO (Πλαίσιο): {len(pl_rows)}")
-        wos += [plaisio.to_wo(r) for r in pl_rows]
-
-    for wo_no, reason in read_errors:
-        r = dict(result="ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ", stage="read", reason=reason, domx_ref="")
-        append_history(run_id, wo_no, r, wo_no in seen_before)
-        totals[r["result"]] += 1
-        rows.append(report_row(None, dict(r, wo=wo_no), datetime.now().strftime("%H:%M:%S")))
+        try:
+            if TEST:
+                print("ΛΕΙΤΟΥΡΓΙΑ ΔΟΚΙΜΗΣ: τεχνητά WO Πλαισίου, χωρίς ανάγνωση portal")
+                pl_rows = plaisio.TEST_ROWS
+            else:
+                plaisio.login_plaisio(src)
+                pl_rows = plaisio.read_open(src)
+            pl_rows = pl_rows[:LIMIT]
+            found_total += len(pl_rows)
+            print(f"\nΕντοπίστηκαν WO (Πλαίσιο): {len(pl_rows)}")
+            wos += [plaisio.to_wo(r) for r in pl_rows]
+        except Exception as e:
+            read_errors.append(("ΠΗΓΗ plaisio", f"{type(e).__name__}: {str(e)[:150]}"))
+            print(f"ΣΦΑΛΜΑ πηγής Πλαίσιο: {e}")
 
     # --- Προορισμός: domx ---
     dx = ctx.new_page()
