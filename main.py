@@ -6,16 +6,30 @@ from playwright.sync_api import sync_playwright
 import domx
 import keyring
 import requests
+import plaisio
 from rules import deadline, build_title, split_name, customer_phones
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment
+
 REPORT_FILE = Path(r"C:\Users\kokka\KK TEXNIKI\Office - Office\Domx") / "WO_Report.xlsx"
 PROFILE = Path.home() / "kotsovolos-domx-profile"   # μόνιμο προφίλ browser, εκτός repo
 
 SOURCE_URL = "https://kotsovolosportal.powerappsportals.com/workorder-list/"
 HISTORY = Path("history.csv")
 COLUMNS = ["run_id", "time", "wo", "stage", "result", "reason", "domx_ref", "recheck"]
-LIMIT = int(sys.argv[1]) if len(sys.argv) > 1 else None
+
+# ---------- ΠΑΡΑΜΕΤΡΟΙ ΓΡΑΜΜΗΣ ΕΝΤΟΛΩΝ ----------
+# python main.py            → Κωτσόβολος + Πλαίσιο, όλα τα WO
+# python main.py 2          → έως 2 WO ανά πηγή
+# python main.py --source plaisio [N]   → μόνο μία πηγή
+# python main.py --source plaisio --test → τεχνητά WO Πλαισίου (TEST_ROWS)
+_args = sys.argv[1:]
+SOURCES = ["kotsovolos", "plaisio"]
+if "--source" in _args:
+    i = _args.index("--source"); SOURCES = [_args[i + 1]]; del _args[i:i + 2]
+TEST = "--test" in _args
+_args = [a for a in _args if a != "--test"]
+LIMIT = int(_args[0]) if _args else None
 
 FIELDS = [
     ("Work Order Number", r"^Work Order Number$"),
@@ -79,6 +93,7 @@ def read_wo(page, expected_wo, url):
         raise RuntimeError(f"Αναμενόταν {expected_wo}, διαβάστηκε {actual}.")
     wo = {label: read_field(page, pattern) for label, pattern in FIELDS}
     wo["_pdd"] = parse_pdd(wo["Product Delivery Date"])
+    wo["_source"] = "kotsovolos"
     return wo
 
 
@@ -106,6 +121,7 @@ def confirm(page):
     print("ΕΛΕΓΞΕ ΤΗ ΦΟΡΜΑ. Resume = ΤΕΛΟΣ. Αν κάτι είναι λάθος, κλείσε με Χ πριν το Resume.")
     page.pause()
     return domx.wizard_is_open(page)
+
 
 # ---------- ΑΥΤΟΜΑΤΗ ΣΥΝΔΕΣΗ (μόνο αν εμφανιστεί σελίδα login) ----------
 
@@ -152,17 +168,18 @@ def login_domx(page):
         page.wait_for_timeout(500)
     raise RuntimeError("domx: δεν εμφανίστηκε το dashboard σε 60s.")
 
+
 # ---------- REPORT ΑΝΑ ΕΚΤΕΛΕΣΗ ----------
 
 COLORS = {"ΚΑΤΑΧΩΡΙΣΤΗΚΕ": "C6EFCE", "ΠΑΡΑΛΕΙΨΗ": "E7E6E6", "ΓΙΑ ΕΛΕΓΧΟ": "FFEB9C", "ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ": "FFC7CE"}
 HEAD = ["Εκτέλεση", "WO", "Υπηρεσία", "Τίτλος domx", "Προθεσμία", "Παράδοση (πηγή)", "Πελάτης", "Τηλέφωνα",
-        "Διεύθυνση πηγής", "Επιλογή πελάτη/εγκατάστασης", "Αποτέλεσμα", "Στάδιο", "Αιτία", "Ώρα"]
+        "Διεύθυνση πηγής", "Επιλογή πελάτη/εγκατάστασης", "Αποτέλεσμα", "Στάδιο", "Αιτία", "Ώρα", "Πηγή"]
 
 
 def report_row(wo, r, t):
     # Μία γραμμή report από τα δεδομένα του WO και το αποτέλεσμα· όλα τα πεδία προαιρετικά
     if wo is None:
-        return [r["wo"], "", "", "", "", "", "", "", "", r["result"], r["stage"], r["reason"], t]
+        return [r["wo"], "", "", "", "", "", "", "", "", r["result"], r["stage"], r["reason"], t, ""]
     title = build_title(wo["Work Order Number"], wo["Service"], wo.get("POD", ""))
     due = deadline(wo.get("_pdd"), date.today()).strftime("%d/%m/%Y %H:%M")
     try:
@@ -176,7 +193,7 @@ def report_row(wo, r, t):
               .replace("new_installation", "νέα εγκατάσταση (Google)").replace("existing_installation", "υπάρχουσα εγκατάσταση")
               .replace("fallback_address", "ΕΝΑΛΛΑΚΤΙΚΗ ΔΙΕΥΘΥΝΣΗ ΚΑΤΑΣΤΗΜΑΤΟΣ"))
     return [wo["Work Order Number"], wo["Service"], title, due, wo.get("Product Delivery Date", ""),
-            name, " / ".join(phones), addr, choice, r["result"], r["stage"], r["reason"], t]
+            name, " / ".join(phones), addr, choice, r["result"], r["stage"], r["reason"], t, wo.get("_source", "")]
 
 
 def write_report(run_id, rows, totals, found):
@@ -184,11 +201,15 @@ def write_report(run_id, rows, totals, found):
     if REPORT_FILE.exists():
         wb = load_workbook(REPORT_FILE)
         ws, s = wb["Αποτελέσματα"], wb["Εκτελέσεις"]
+        if ws.cell(1, 15).value != "Πηγή":
+            ws.cell(1, 15, "Πηγή").font = Font(bold=True)
+            ws.cell(1, 15).fill = PatternFill("solid", fgColor="DDEBF7")
+            ws.column_dimensions["O"].width = 11
     else:
         REPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
         wb = Workbook(); ws = wb.active; ws.title = "Αποτελέσματα"
         ws.append(HEAD)
-        for col, w in zip("ABCDEFGHIJKLMN", (15, 12, 34, 24, 16, 16, 26, 24, 34, 36, 16, 11, 40, 9)):
+        for col, w in zip("ABCDEFGHIJKLMNO", (15, 12, 34, 24, 16, 16, 26, 24, 34, 36, 16, 11, 40, 9, 11)):
             ws.column_dimensions[col].width = w
         ws.freeze_panes = "C2"
         s = wb.create_sheet("Εκτελέσεις")
@@ -213,6 +234,7 @@ def write_report(run_id, rows, totals, found):
         print("ΠΡΟΣΟΧΗ: το WO_Report.xlsx ήταν ανοιχτό — γράφτηκε αντίγραφο με όλα τα δεδομένα:", alt.name)
         return alt
 
+
 # ---------- ΕΙΔΟΠΟΙΗΣΗ TEAMS (μόνο ΓΙΑ ΕΛΕΓΧΟ / ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ) ----------
 
 def notify_teams(run_id, rows):
@@ -226,7 +248,7 @@ def notify_teams(run_id, rows):
              "text": f"Work Orders για έλεγχο — εκτέλεση {run_id} ({len(issues)})"}]
     for r in issues:
         body.append({"type": "TextBlock", "wrap": True,
-                     "text": f"**{r[0]}** · {r[1]}\n\n{r[9]} στο στάδιο «{r[10]}»: {r[11]}"})
+                     "text": f"**{r[0]}** ({r[13]}) · {r[1]}\n\n{r[9]} στο στάδιο «{r[10]}»: {r[11]}"})
     card = {"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive",
             "content": {"$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "type": "AdaptiveCard",
                         "version": "1.4", "body": body}}]}
@@ -248,23 +270,38 @@ with sync_playwright() as p:
     ctx = p.chromium.launch_persistent_context(str(PROFILE), headless=False, no_viewport=True)
 
     src = ctx.pages[0] if ctx.pages else ctx.new_page()   # το persistent προφίλ ανοίγει ήδη μία καρτέλα
-    src.goto(SOURCE_URL, wait_until="domcontentloaded", timeout=60000)
-    login_kotsovolos(src)
-    src.get_by_role("link", name=re.compile(r"^WO\d+$")).first.wait_for(state="visible", timeout=60000)
-    if urlsplit(src.url).path.rstrip("/") != "/workorder-list":
-        raise SystemExit("Δεν βρίσκεσαι στη λίστα WO. Τέλος χωρίς καμία ενέργεια.")
+    wos, read_errors, found_total = [], [], 0
 
-    targets = list(collect_targets(src).items())[:LIMIT]
-    print(f"\nΕντοπίστηκαν WO: {len(targets)}")
+    # --- Πηγή 1: Κωτσόβολος ---
+    if "kotsovolos" in SOURCES:
+        src.goto(SOURCE_URL, wait_until="domcontentloaded", timeout=60000)
+        login_kotsovolos(src)
+        src.get_by_role("link", name=re.compile(r"^WO\d+$")).first.wait_for(state="visible", timeout=60000)
+        if urlsplit(src.url).path.rstrip("/") != "/workorder-list":
+            raise SystemExit("Δεν βρίσκεσαι στη λίστα WO. Τέλος χωρίς καμία ενέργεια.")
+        targets = list(collect_targets(src).items())[:LIMIT]
+        found_total += len(targets)
+        print(f"\nΕντοπίστηκαν WO (Κωτσόβολος): {len(targets)}")
+        for n, (wo_no, url) in enumerate(targets, 1):
+            try:
+                wos.append(read_wo(src, wo_no, url))
+                print(f"  {n}/{len(targets)} διαβάστηκε {wo_no}")
+            except Exception as e:
+                read_errors.append((wo_no, f"{type(e).__name__}: {str(e)[:150]}"))
+                print(f"  {n}/{len(targets)} ΣΦΑΛΜΑ ανάγνωσης {wo_no}: {e}")
 
-    wos, read_errors = [], []
-    for n, (wo_no, url) in enumerate(targets, 1):
-        try:
-            wos.append(read_wo(src, wo_no, url))
-            print(f"  {n}/{len(targets)} διαβάστηκε {wo_no}")
-        except Exception as e:
-            read_errors.append((wo_no, f"{type(e).__name__}: {str(e)[:150]}"))
-            print(f"  {n}/{len(targets)} ΣΦΑΛΜΑ ανάγνωσης {wo_no}: {e}")
+    # --- Πηγή 2: Πλαίσιο ---
+    if "plaisio" in SOURCES:
+        if TEST:
+            print("ΛΕΙΤΟΥΡΓΙΑ ΔΟΚΙΜΗΣ: τεχνητά WO Πλαισίου, χωρίς ανάγνωση portal")
+            pl_rows = plaisio.TEST_ROWS
+        else:
+            plaisio.login_plaisio(src)
+            pl_rows = plaisio.read_open(src)
+        pl_rows = pl_rows[:LIMIT]
+        found_total += len(pl_rows)
+        print(f"\nΕντοπίστηκαν WO (Πλαίσιο): {len(pl_rows)}")
+        wos += [plaisio.to_wo(r) for r in pl_rows]
 
     for wo_no, reason in read_errors:
         r = dict(result="ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ", stage="read", reason=reason, domx_ref="")
@@ -272,12 +309,13 @@ with sync_playwright() as p:
         totals[r["result"]] += 1
         rows.append(report_row(None, dict(r, wo=wo_no), datetime.now().strftime("%H:%M:%S")))
 
+    # --- Προορισμός: domx ---
     dx = ctx.new_page()
     login_domx(dx)
 
     for n, wo in enumerate(wos, 1):
         wo_no = wo["Work Order Number"]
-        print(f"\n=== {n}/{len(wos)}: {wo_no} | {wo['Service']} ===")
+        print(f"\n=== {n}/{len(wos)}: {wo_no} | {wo['Service']} | {wo.get('_source', '')} ===")
         try:
             r = domx.process_wo(dx, wo)
         except Exception as e:
@@ -288,12 +326,12 @@ with sync_playwright() as p:
         print(f"ΑΠΟΤΕΛΕΣΜΑ: {r['result']} | στάδιο: {r['stage']} | αιτία: {r['reason']} | ref: {r['domx_ref']}")
 
     print(f"\n===== ΣΥΝΟΛΑ ({run_id}) =====")
-    print(f"Εντοπίστηκαν: {len(targets)}")
+    print(f"Εντοπίστηκαν: {found_total}")
     print(f"Παραλείφθηκαν ως υπάρχοντα: {totals['ΠΑΡΑΛΕΙΨΗ']}")
     print(f"Καταχωρίστηκαν: {totals['ΚΑΤΑΧΩΡΙΣΤΗΚΕ']}")
     print(f"Χρειάζονται έλεγχο: {totals['ΓΙΑ ΕΛΕΓΧΟ']}")
     print(f"Τεχνικά σφάλματα: {totals['ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ']}")
     print(f"Ιστορικό: {HISTORY.resolve()}")
-    print(f"Report: {write_report(run_id, rows, totals, len(targets)).resolve()}")
+    print(f"Report: {write_report(run_id, rows, totals, found_total).resolve()}")
     print(f"Teams: {notify_teams(run_id, rows)}")
     ctx.close()

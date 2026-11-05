@@ -11,6 +11,7 @@ from playwright.sync_api import expect
 from rules import deadline, build_title, build_notes, norm, split_name, customer_phones
 
 OWNER = "Έφη Τσιατσιάνη"
+SERVICE_PREFIX = {"kotsovolos": "Κ-", "plaisio": "Π-"}
 BASE_URL = "https://portal.business.domx.online"
 START_DATE = "01/01/2024"
 END_DATE = "31/12/2031"
@@ -233,11 +234,40 @@ def open_wizard(page):
     page.get_by_role("button", name="ΕΚΚΡΕΜΟΤΗΤΑ", exact=True).click()
     page.get_by_role("textbox", name="Τίτλος").wait_for(state="visible")
 
+GREEK_MONTHS = ["Ιανουάριος", "Φεβρουάριος", "Μάρτιος", "Απρίλιος", "Μάιος", "Ιούνιος",
+                "Ιούλιος", "Αύγουστος", "Σεπτέμβριος", "Οκτώβριος", "Νοέμβριος", "Δεκέμβριος"]
+
+def date_pick(page, due):
+    """Επιλέγει την ημερομηνία προθεσμίας στο πεδίο «Ολοκλήρωση έως» (Vuetify date picker)."""
+    field = page.get_by_label("Ολοκλήρωση έως", exact=True)
+    field.click()
+    header = page.locator(".v-date-picker-header__value").last
+    header.wait_for(state="visible", timeout=10000)
+    target = f"{GREEK_MONTHS[due.month - 1]} {due.year}"
+    for _ in range(36):
+        shown = header.inner_text().strip()
+        if norm(shown) == norm(target):
+            break
+        parts = shown.split()
+        shown_idx = (int(parts[1]) * 12 + GREEK_MONTHS.index(parts[0])) if len(parts) == 2 and parts[0] in GREEK_MONTHS else None
+        target_idx = due.year * 12 + (due.month - 1)
+        arrows = page.locator(".v-date-picker-header button")
+        (arrows.last if shown_idx is None or shown_idx < target_idx else arrows.first).click()
+        page.wait_for_timeout(300)
+    else:
+        raise RuntimeError(f"Ημερολόγιο: δεν βρέθηκε ο μήνας «{target}»")
+    day = page.locator(".v-date-picker-table button").filter(
+        has_text=re.compile(rf"^\s*{due.day}\s*$")).first
+    day.click()
+    expect(field).to_have_value(due.strftime("%Y-%m-%d"), timeout=5000)
+    if header.is_visible():
+        page.keyboard.press("Escape")
+    log(f"Ημερομηνία προθεσμίας: {due.strftime('%d/%m/%Y')}")
 
 def fill_task_step(page, wo, today=None):
     today = today or date.today()
     title = build_title(wo["Work Order Number"], wo["Service"], wo.get("POD", ""))
-    service = "Κ-" + wo["Service"]
+    service = SERVICE_PREFIX[wo.get("_source", "kotsovolos")] + wo["Service"]
     due = deadline(wo.get("_pdd"), today)   # _pdd: Product Delivery Date ως date ή None
 
     page.get_by_role("textbox", name="Τίτλος").click()
@@ -260,6 +290,7 @@ def fill_task_step(page, wo, today=None):
     page.get_by_role("option").filter(has_text=OWNER).first.click()
     page.keyboard.press("Escape")
 
+    date_pick(page, due)
     page.locator(".v-input--selection-controls__ripple").first.click()
     time_btn = page.get_by_role("button", name="Ώρα")
     time_btn.wait_for(state="visible"); time_btn.click()
@@ -268,7 +299,7 @@ def fill_task_step(page, wo, today=None):
     page.get_by_role("menu").wait_for(state="hidden")
 
     notes = page.get_by_role("textbox", name="Σημειώσεις εκκρεμότητας")
-    notes.click(); notes.fill(build_notes(wo))
+    notes.click(); notes.fill(wo.get("_notes") or build_notes(wo))
     log(f"Τίτλος: {title} | Προθεσμία: {due.strftime('%d/%m/%Y %H:%M')}")
     return title
 
@@ -420,7 +451,13 @@ def process_wo(page, wo, confirm=None, today=None):
         end.click()
         page.get_by_role("textbox", name="Τίτλος").wait_for(state="hidden", timeout=15000)
         stage = "verify"
-        if exists_in_domx(page, wo_no):
+        try:
+            found = exists_in_domx(page, wo_no)
+        except RuntimeError as e:
+            log(f"Verify αβέβαιο ({e}) — επαναφόρτωση και δεύτερη αναζήτηση (Σ-7)")
+            _TASKS.clear()
+            found = exists_in_domx(page, wo_no)
+        if found:
             return dict(result="ΚΑΤΑΧΩΡΙΣΤΗΚΕ", stage=stage,
                         reason=f"πελάτης {kind}, εγκατάσταση {inst}", domx_ref=title)
         return dict(result="ΤΕΧΝΙΚΟ ΣΦΑΛΜΑ", stage=stage,
