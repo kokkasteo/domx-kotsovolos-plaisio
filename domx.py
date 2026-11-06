@@ -195,8 +195,17 @@ def next_button(page, step):
     return page.get_by_role("button", name="ΕΠΟΜΕΝΟ").nth(step - 1)
 
 
+def _time_menu(page):
+    # Το αναδυόμενο που περιέχει το ρολόι (όχι το ημερολόγιο)
+    return page.locator(".v-menu__content:visible").filter(has=page.locator(".v-time-picker-clock"))
+
 def clock_pick(page, value):
-    page.get_by_role("menu").get_by_text(value, exact=True).click()
+    menu = _time_menu(page)
+    expect(menu).to_have_count(1, timeout=10000)
+    item = menu.locator(".v-time-picker-clock").locator("visible=true").get_by_text(value, exact=True)
+    item.first.wait_for(state="visible", timeout=10000)
+    page.wait_for_timeout(300)          # να ολοκληρωθεί το εφέ του ρολογιού πριν το κλικ
+    item.first.click()
 
 
 def field_value(page, label):
@@ -262,6 +271,7 @@ def date_pick(page, due):
     expect(field).to_have_value(due.strftime("%Y-%m-%d"), timeout=5000)
     if header.is_visible():
         page.keyboard.press("Escape")
+    expect(page.locator(".v-date-picker-table:visible")).to_have_count(0, timeout=5000)
     log(f"Ημερομηνία προθεσμίας: {due.strftime('%d/%m/%Y')}")
 
 def fill_task_step(page, wo, today=None):
@@ -293,10 +303,16 @@ def fill_task_step(page, wo, today=None):
     date_pick(page, due)
     page.locator(".v-input--selection-controls__ripple").first.click()
     time_btn = page.get_by_role("button", name="Ώρα")
-    time_btn.wait_for(state="visible"); time_btn.click()
-    clock_pick(page, str(due.hour)); clock_pick(page, due.strftime("%M"))
-    page.get_by_role("menu").get_by_role("button").last.click()
-    page.get_by_role("menu").wait_for(state="hidden")
+    time_btn.wait_for(state="visible", timeout=10000)
+    page.wait_for_timeout(300)          # το κουμπί «Ώρα» εμφανίζεται με εφέ μετά το ξετσεκάρισμα
+    time_btn.click()
+    clock_pick(page, str(due.hour))
+    page.wait_for_timeout(400)          # εναλλαγή ρολογιού από ώρες σε λεπτά
+    clock_pick(page, due.strftime("%M"))
+    menu = _time_menu(page)
+    menu.get_by_role("button").last.click()
+    expect(menu).to_have_count(0, timeout=10000)
+    log(f"Ώρα προθεσμίας: {due.strftime('%H:%M')}")
 
     notes = page.get_by_role("textbox", name="Σημειώσεις εκκρεμότητας")
     notes.click(); notes.fill(wo.get("_notes") or build_notes(wo))
